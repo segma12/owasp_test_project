@@ -56,7 +56,7 @@ class App
         return $stmt->fetch();
     }
 
-    // Function to validate and sanitize input
+// Function to validate and sanitize input
     function sanitizeInput($data) {
         return htmlspecialchars(stripslashes(trim($data)));
     }
@@ -112,8 +112,11 @@ class App
             return "Password must be at least 12 characters long after combining multiple spaces.";
         }
 
-        // Hash the password
-        $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+        // Hash the password with a randomly generated salt
+        $options = [
+            'cost' => 12, // the cost parameter defines the computational cost
+        ];
+        $hashedPassword = password_hash($password, PASSWORD_DEFAULT, $options);
 
         // Generate TOTP secret
         $totp = TOTP::create();
@@ -155,8 +158,11 @@ class App
             return "New password must be at least 12 characters long after combining multiple spaces.";
         }
 
-        // Hash the new password
-        $hashedNewPassword = password_hash($newPassword, PASSWORD_DEFAULT);
+        // Hash the new password with a randomly generated salt
+        $options = [
+            'cost' => 12, // the cost parameter defines the computational cost
+        ];
+        $hashedNewPassword = password_hash($newPassword, PASSWORD_DEFAULT, $options);
 
         // Prepare and bind
         $stmt = $conn->prepare("UPDATE users SET password = ? WHERE username = ?");
@@ -205,7 +211,7 @@ class App
         sendEmailNotification($email, $subject, $body);
     }
 
-    // Function to verify TOTP code
+// Function to verify TOTP code
     function verifyTotp($username, $totpCode, $conn) {
         // Get user's TOTP secret
         $stmt = $conn->prepare("SELECT totp_secret FROM users WHERE username = ?");
@@ -218,5 +224,33 @@ class App
         // Verify the TOTP code
         $totp = TOTP::create($secret);
         return $totp->verify($totpCode);
+    }
+
+// Function to handle user login
+    function login($username, $password, $totpCode, $conn) {
+        // Sanitize input
+        $username = sanitizeInput($username);
+        $password = sanitizeInput($password);
+
+        // Prepare and bind
+        $stmt = $conn->prepare("SELECT password, totp_secret FROM users WHERE username = ?");
+        $stmt->bind_param("s", $username);
+        $stmt->execute();
+        $stmt->bind_result($hashedPassword, $secret);
+        $stmt->fetch();
+        $stmt->close();
+
+        // Verify password
+        if (password_verify($password, $hashedPassword)) {
+            // Verify TOTP code
+            $totp = TOTP::create($secret);
+            if ($totp->verify($totpCode)) {
+                return "Login successful!";
+            } else {
+                return "Invalid TOTP code.";
+            }
+        } else {
+            return "Invalid username or password.";
+        }
     }
 }
