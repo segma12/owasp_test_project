@@ -61,7 +61,7 @@ class App
         return htmlspecialchars(stripslashes(trim($data)));
     }
 
-    // Function to validate password
+// Function to validate password
     function validatePassword($password) {
         // Remove multiple spaces
         $password = preg_replace('/\s+/', ' ', $password);
@@ -69,65 +69,7 @@ class App
         return strlen($password) >= 12;
     }
 
-    // Function to handle user signup
-    function signup($username, $password, $conn) {
-        // Sanitize input
-        $username = sanitizeInput($username);
-        $password = sanitizeInput($password);
-
-        // Validate password
-        if (!validatePassword($password)) {
-            return "Password must be at least 12 characters long after combining multiple spaces.";
-        }
-
-        // Hash the password
-        $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
-
-        // Prepare and bind
-        $stmt = $conn->prepare("INSERT INTO users (username, password) VALUES (?, ?)");
-        $stmt->bind_param("ss", $username, $hashedPassword);
-
-        // Execute the statement
-        if ($stmt->execute()) {
-            return "Signup successful!";
-        } else {
-            return "Error: " . $stmt->error;
-        }
-
-        // Close the statement
-        $stmt->close();
-    }
-
-    // Function to handle password change
-    function changePassword($username, $newPassword, $conn) {
-        // Sanitize input
-        $username = sanitizeInput($username);
-        $newPassword = sanitizeInput($newPassword);
-
-        // Validate new password
-        if (!validatePassword($newPassword)) {
-            return "New password must be at least 12 characters long after combining multiple spaces.";
-        }
-
-        // Hash the new password
-        $hashedNewPassword = password_hash($newPassword, PASSWORD_DEFAULT);
-
-        // Prepare and bind
-        $stmt = $conn->prepare("UPDATE users SET password = ? WHERE username = ?");
-        $stmt->bind_param("ss", $hashedNewPassword, $username);
-
-        // Execute the statement
-        if ($stmt->execute()) {
-            return "Password changed successfully!";
-        } else {
-            return "Error: " . $stmt->error;
-        }
-
-        // Close the statement
-        $stmt->close();
-    }
-
-    // Function to send email notification
+// Function to send email notification
     function sendEmailNotification($to, $subject, $body) {
         global $emailHost, $emailUsername, $emailPassword, $emailFrom, $emailFromName;
 
@@ -158,7 +100,93 @@ class App
         }
     }
 
-    // Function to handle unknown login notification
+// Function to handle user signup
+    function signup($username, $password, $email, $conn) {
+        // Sanitize input
+        $username = sanitizeInput($username);
+        $password = sanitizeInput($password);
+        $email = sanitizeInput($email);
+
+        // Validate password
+        if (!validatePassword($password)) {
+            return "Password must be at least 12 characters long after combining multiple spaces.";
+        }
+
+        // Hash the password
+        $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+
+        // Generate TOTP secret
+        $totp = TOTP::create();
+        $secret = $totp->getSecret();
+
+        // Prepare and bind
+        $stmt = $conn->prepare("INSERT INTO users (username, password, email, totp_secret) VALUES (?, ?, ?, ?)");
+        $stmt->bind_param("ssss", $username, $hashedPassword, $email, $secret);
+
+        // Execute the statement
+        if ($stmt->execute()) {
+            // Send notification email
+            $subject = "Signup Successful";
+            $body = "Dear $username,<br><br>Your account has been successfully created.<br><br>Regards,<br>Your App Name";
+            sendEmailNotification($email, $subject, $body);
+
+            // Display QR code for TOTP
+            $qrCodeUrl = $totp->getProvisioningUri();
+            echo "<p>Scan this QR code with your authenticator app:</p>";
+            echo "<img src='https://api.qrserver.com/v1/create-qr-code/?data=" . urlencode($qrCodeUrl) . "'>";
+
+            return "Signup successful!";
+        } else {
+            return "Error: " . $stmt->error;
+        }
+
+        // Close the statement
+        $stmt->close();
+    }
+
+// Function to handle password change
+    function changePassword($username, $newPassword, $conn) {
+        // Sanitize input
+        $username = sanitizeInput($username);
+        $newPassword = sanitizeInput($newPassword);
+
+        // Validate new password
+        if (!validatePassword($newPassword)) {
+            return "New password must be at least 12 characters long after combining multiple spaces.";
+        }
+
+        // Hash the new password
+        $hashedNewPassword = password_hash($newPassword, PASSWORD_DEFAULT);
+
+        // Prepare and bind
+        $stmt = $conn->prepare("UPDATE users SET password = ? WHERE username = ?");
+        $stmt->bind_param("ss", $hashedNewPassword, $username);
+
+        // Execute the statement
+        if ($stmt->execute()) {
+            // Get user's email
+            $stmt = $conn->prepare("SELECT email FROM users WHERE username = ?");
+            $stmt->bind_param("s", $username);
+            $stmt->execute();
+            $stmt->bind_result($email);
+            $stmt->fetch();
+            $stmt->close();
+
+            // Send notification email
+            $subject = "Password Changed Successfully";
+            $body = "Dear $username,<br><br>Your password has been successfully changed.<br><br>Regards,<br>Your App Name";
+            sendEmailNotification($email, $subject, $body);
+
+            return "Password changed successfully!";
+        } else {
+            return "Error: " . $stmt->error;
+        }
+
+        // Close the statement
+        $stmt->close();
+    }
+
+// Function to handle unknown login notification
     function notifyUnknownLogin($username, $conn) {
         // Sanitize input
         $username = sanitizeInput($username);
@@ -175,5 +203,20 @@ class App
         $subject = "Unknown Login Detected";
         $body = "Dear $username,<br><br>We detected a login to your account from an unknown or risky location. If this was not you, please change your password immediately.<br><br>Regards,<br>Your App Name";
         sendEmailNotification($email, $subject, $body);
+    }
+
+    // Function to verify TOTP code
+    function verifyTotp($username, $totpCode, $conn) {
+        // Get user's TOTP secret
+        $stmt = $conn->prepare("SELECT totp_secret FROM users WHERE username = ?");
+        $stmt->bind_param("s", $username);
+        $stmt->execute();
+        $stmt->bind_result($secret);
+        $stmt->fetch();
+        $stmt->close();
+
+        // Verify the TOTP code
+        $totp = TOTP::create($secret);
+        return $totp->verify($totpCode);
     }
 }
