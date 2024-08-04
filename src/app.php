@@ -61,12 +61,25 @@ class App
         return htmlspecialchars(stripslashes(trim($data)));
     }
 
-// Function to validate password
+    // Function to validate password
     function validatePassword($password) {
         // Remove multiple spaces
         $password = preg_replace('/\s+/', ' ', $password);
         // Check if password length is at least 12 characters
         return strlen($password) >= 12;
+    }
+
+// Function to encrypt data
+    function encryptData($data) {
+        $iv = random_bytes(openssl_cipher_iv_length(ENCRYPTION_METHOD)); // Generate a secure random IV
+        $encryptedData = openssl_encrypt($data, ENCRYPTION_METHOD, ENCRYPTION_KEY, 0, $iv);
+        return base64_encode($encryptedData . '::' . $iv);
+    }
+
+// Function to decrypt data
+    function decryptData($data) {
+        list($encryptedData, $iv) = explode('::', base64_decode($data), 2);
+        return openssl_decrypt($encryptedData, ENCRYPTION_METHOD, ENCRYPTION_KEY, 0, $iv);
     }
 
 // Function to send email notification
@@ -118,13 +131,16 @@ class App
         ];
         $hashedPassword = password_hash($password, PASSWORD_DEFAULT, $options);
 
+        // Encrypt email
+        $encryptedEmail = encryptData($email);
+
         // Generate TOTP secret
         $totp = TOTP::create();
         $secret = $totp->getSecret();
 
         // Prepare and bind
         $stmt = $conn->prepare("INSERT INTO users (username, password, email, totp_secret) VALUES (?, ?, ?, ?)");
-        $stmt->bind_param("ssss", $username, $hashedPassword, $email, $secret);
+        $stmt->bind_param("ssss", $username, $hashedPassword, $encryptedEmail, $secret);
 
         // Execute the statement
         if ($stmt->execute()) {
@@ -170,13 +186,16 @@ class App
 
         // Execute the statement
         if ($stmt->execute()) {
-            // Get user's email
+            // Get user's encrypted email
             $stmt = $conn->prepare("SELECT email FROM users WHERE username = ?");
             $stmt->bind_param("s", $username);
             $stmt->execute();
-            $stmt->bind_result($email);
+            $stmt->bind_result($encryptedEmail);
             $stmt->fetch();
             $stmt->close();
+
+            // Decrypt email
+            $email = decryptData($encryptedEmail);
 
             // Send notification email
             $subject = "Password Changed Successfully";
@@ -197,13 +216,16 @@ class App
         // Sanitize input
         $username = sanitizeInput($username);
 
-        // Get user's email
+        // Get user's encrypted email
         $stmt = $conn->prepare("SELECT email FROM users WHERE username = ?");
         $stmt->bind_param("s", $username);
         $stmt->execute();
-        $stmt->bind_result($email);
+        $stmt->bind_result($encryptedEmail);
         $stmt->fetch();
         $stmt->close();
+
+        // Decrypt email
+        $email = decryptData($encryptedEmail);
 
         // Send notification email
         $subject = "Unknown Login Detected";
