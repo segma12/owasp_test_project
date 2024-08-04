@@ -4,6 +4,24 @@ class App
 {
     private $db;
 
+    // Configuration settings
+    private $config = [
+        'encryption' => [
+            'algorithm' => 'AES-256-CBC',
+            'key' => 'your-encryption-key', // Change to your actual encryption key (32 bytes for AES-256)
+            'iv_length' => 16
+        ],
+        'hashing' => [
+            'algorithm' => PASSWORD_DEFAULT,
+            'options' => ['cost' => 12]
+        ],
+        'random' => [
+            'guid_length' => 16,
+            'file_name_length' => 16,
+            'string_length' => 16
+        ]
+    ];
+
     public function __construct()
     {
         $this->connectToDatabase();
@@ -69,17 +87,40 @@ class App
         return strlen($password) >= 12;
     }
 
+// Function to generate a secure random GUID
+    function generateGuid($length) {
+        $data = random_bytes($length);
+        assert(strlen($data) == $length);
+
+        // Set version to 0100
+        $data[6] = chr(ord($data[6]) & 0x0f | 0x40);
+        // Set bits 6-7 to 10
+        $data[8] = chr(ord($data[8]) & 0x3f | 0x80);
+
+        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
+    }
+
+// Function to generate a secure random file name
+    function generateRandomFileName($length) {
+        return bin2hex(random_bytes($length / 2));
+    }
+
+// Function to generate a secure random string
+    function generateRandomString($length) {
+        return bin2hex(random_bytes($length / 2));
+    }
+
 // Function to encrypt data
-    function encryptData($data) {
-        $iv = random_bytes(openssl_cipher_iv_length(ENCRYPTION_METHOD)); // Generate a secure random IV
-        $encryptedData = openssl_encrypt($data, ENCRYPTION_METHOD, ENCRYPTION_KEY, 0, $iv);
+    function encryptData($data, $config) {
+        $iv = random_bytes($config['encryption']['iv_length']); // Generate a secure random IV
+        $encryptedData = openssl_encrypt($data, $config['encryption']['algorithm'], $config['encryption']['key'], 0, $iv);
         return base64_encode($encryptedData . '::' . $iv);
     }
 
 // Function to decrypt data
-    function decryptData($data) {
+    function decryptData($data, $config) {
         list($encryptedData, $iv) = explode('::', base64_decode($data), 2);
-        return openssl_decrypt($encryptedData, ENCRYPTION_METHOD, ENCRYPTION_KEY, 0, $iv);
+        return openssl_decrypt($encryptedData, $config['encryption']['algorithm'], $config['encryption']['key'], 0, $iv);
     }
 
 // Function to send email notification
@@ -114,7 +155,7 @@ class App
     }
 
 // Function to handle user signup
-    function signup($username, $password, $email, $conn) {
+    function signup($username, $password, $email, $conn, $config) {
         // Sanitize input
         $username = sanitizeInput($username);
         $password = sanitizeInput($password);
@@ -126,13 +167,10 @@ class App
         }
 
         // Hash the password with a randomly generated salt
-        $options = [
-            'cost' => 12, // the cost parameter defines the computational cost
-        ];
-        $hashedPassword = password_hash($password, PASSWORD_DEFAULT, $options);
+        $hashedPassword = password_hash($password, $config['hashing']['algorithm'], $config['hashing']['options']);
 
         // Encrypt email
-        $encryptedEmail = encryptData($email);
+        $encryptedEmail = encryptData($email, $config);
 
         // Generate TOTP secret
         $totp = TOTP::create();
@@ -164,7 +202,7 @@ class App
     }
 
 // Function to handle password change
-    function changePassword($username, $newPassword, $conn) {
+    function changePassword($username, $newPassword, $conn, $config) {
         // Sanitize input
         $username = sanitizeInput($username);
         $newPassword = sanitizeInput($newPassword);
@@ -175,10 +213,7 @@ class App
         }
 
         // Hash the new password with a randomly generated salt
-        $options = [
-            'cost' => 12, // the cost parameter defines the computational cost
-        ];
-        $hashedNewPassword = password_hash($newPassword, PASSWORD_DEFAULT, $options);
+        $hashedNewPassword = password_hash($newPassword, $config['hashing']['algorithm'], $config['hashing']['options']);
 
         // Prepare and bind
         $stmt = $conn->prepare("UPDATE users SET password = ? WHERE username = ?");
@@ -195,7 +230,7 @@ class App
             $stmt->close();
 
             // Decrypt email
-            $email = decryptData($encryptedEmail);
+            $email = decryptData($encryptedEmail, $config);
 
             // Send notification email
             $subject = "Password Changed Successfully";
@@ -212,7 +247,7 @@ class App
     }
 
 // Function to handle unknown login notification
-    function notifyUnknownLogin($username, $conn) {
+    function notifyUnknownLogin($username, $conn, $config) {
         // Sanitize input
         $username = sanitizeInput($username);
 
@@ -225,12 +260,14 @@ class App
         $stmt->close();
 
         // Decrypt email
-        $email = decryptData($encryptedEmail);
+        $email = decryptData($encryptedEmail, $config);
 
         // Send notification email
-        $subject = "Unknown Login Detected";
-        $body = "Dear $username,<br><br>We detected a login to your account from an unknown or risky location. If this was not you, please change your password immediately.<br><br>Regards,<br>Your App Name";
+        $subject = "Unknown Login Attempt";
+        $body = "Dear $username,<br><br>We detected a login attempt from an unknown location.<br><br>Regards,<br>Your App Name";
         sendEmailNotification($email, $subject, $body);
+
+        return "Unknown login notification sent!";
     }
 
 // Function to verify TOTP code
@@ -249,7 +286,7 @@ class App
     }
 
 // Function to handle user login
-    function login($username, $password, $totpCode, $conn) {
+    function login($username, $password, $totpCode, $conn, $config) {
         // Sanitize input
         $username = sanitizeInput($username);
         $password = sanitizeInput($password);
@@ -269,6 +306,7 @@ class App
             if ($totp->verify($totpCode)) {
                 return "Login successful!";
             } else {
+                notifyUnknownLogin($username, $conn, $config);
                 return "Invalid TOTP code.";
             }
         } else {
